@@ -10,5 +10,6 @@ create table custom_tablename (
   last_heartbeat timestamp with time zone,
   version BIGINT not null,
   priority INT,
+  rerun BOOLEAN,
   PRIMARY KEY (task_name, task_instance)
 )

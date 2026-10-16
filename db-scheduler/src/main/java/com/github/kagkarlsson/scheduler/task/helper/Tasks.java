@@ -64,6 +64,18 @@ public class Tasks {
     return new OneTimeTaskBuilder<>(descriptor.getTaskName(), descriptor.getDataClass());
   }
 
+  public static CoalescingTaskBuilder<Void> coalescing(String name) {
+    return coalescing(TaskDescriptor.of(name, Void.class));
+  }
+
+  public static <T> CoalescingTaskBuilder<T> coalescing(String name, Class<T> dataClass) {
+    return coalescing(TaskDescriptor.of(name, dataClass));
+  }
+
+  public static <T> CoalescingTaskBuilder<T> coalescing(TaskDescriptor<T> descriptor) {
+    return new CoalescingTaskBuilder<>(descriptor.getTaskName(), descriptor.getDataClass());
+  }
+
   public static <T> TaskBuilder<T> custom(String name, Class<T> dataClass) {
     return new TaskBuilder<>(name, dataClass);
   }
@@ -298,6 +310,55 @@ public class Tasks {
 
     public OneTimeTask<T> execute(VoidExecutionHandler<T> executionHandler) {
       return new OneTimeTask<>(name, dataClass, onFailure, onDeadExecution, defaultPriority) {
+        @Override
+        public void executeOnce(TaskInstance<T> taskInstance, ExecutionContext executionContext) {
+          executionHandler.execute(taskInstance, executionContext);
+        }
+      };
+    }
+  }
+
+  public static class CoalescingTaskBuilder<T> {
+    private final String name;
+    private final Class<T> dataClass;
+    private FailureHandler<T> onFailure;
+    private DeadExecutionHandler<T> onDeadExecution;
+    private int defaultPriority = CoalescingTask.DEFAULT_PRIORITY;
+
+    public CoalescingTaskBuilder(String name, Class<T> dataClass) {
+      this.name = name;
+      this.dataClass = dataClass;
+      this.onDeadExecution = new DeadExecutionHandler.ReviveDeadExecution<>();
+      this.onFailure = new FailureHandler.OnFailureRetryLater<>(DEFAULT_RETRY_INTERVAL);
+    }
+
+    public CoalescingTaskBuilder<T> onFailureRetryLater() {
+      this.onFailure = new FailureHandler.OnFailureRetryLater<>(DEFAULT_RETRY_INTERVAL);
+      return this;
+    }
+
+    public CoalescingTaskBuilder<T> onDeadExecutionRevive() {
+      this.onDeadExecution = new DeadExecutionHandler.ReviveDeadExecution<>();
+      return this;
+    }
+
+    public CoalescingTaskBuilder<T> onFailure(FailureHandler<T> failureHandler) {
+      this.onFailure = failureHandler;
+      return this;
+    }
+
+    public CoalescingTaskBuilder<T> onDeadExecution(DeadExecutionHandler<T> deadExecutionHandler) {
+      this.onDeadExecution = deadExecutionHandler;
+      return this;
+    }
+
+    public CoalescingTaskBuilder<T> defaultPriority(int priority) {
+      this.defaultPriority = priority;
+      return this;
+    }
+
+    public CoalescingTask<T> execute(VoidExecutionHandler<T> executionHandler) {
+      return new CoalescingTask<>(name, dataClass, onFailure, onDeadExecution, defaultPriority) {
         @Override
         public void executeOnce(TaskInstance<T> taskInstance, ExecutionContext executionContext) {
           executionHandler.execute(taskInstance, executionContext);

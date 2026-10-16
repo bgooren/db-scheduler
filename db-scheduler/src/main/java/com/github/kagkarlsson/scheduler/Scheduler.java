@@ -253,6 +253,11 @@ public class Scheduler implements SchedulerClient {
   }
 
   @Override
+  public <T> void requestWork(TaskInstance<T> taskInstance) {
+    this.delegate.requestWork(taskInstance);
+  }
+
+  @Override
   public <T> boolean scheduleIfNotExists(TaskInstance<T> taskInstance, Instant executionTime) {
     return this.delegate.scheduleIfNotExists(taskInstance, executionTime);
   }

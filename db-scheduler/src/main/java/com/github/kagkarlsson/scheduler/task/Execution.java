@@ -16,6 +16,7 @@ package com.github.kagkarlsson.scheduler.task;
 import com.github.kagkarlsson.scheduler.Resolvable;
 import java.time.Instant;
 import java.util.Objects;
+import org.jspecify.annotations.Nullable;
 
 @SuppressWarnings("rawtypes")
 public final class Execution implements TaskInstanceId, Resolvable {
@@ -25,12 +26,16 @@ public final class Execution implements TaskInstanceId, Resolvable {
   public final String pickedBy;
   public int consecutiveFailures;
   public final Instant lastHeartbeat;
-  public final long version;
   public final Instant lastFailure;
   public final Instant lastSuccess;
 
+  /** Snapshot only, null when support is disabled; completion checks the current database flag. */
+  public final @Nullable Boolean rerun;
+
+  public final long version;
+
   public Execution(Instant executionTime, TaskInstance taskInstance) {
-    this(executionTime, taskInstance, false, null, null, null, 0, null, 1L);
+    this(executionTime, taskInstance, false, null, null, null, 0, null, null, 1L);
   }
 
   public Execution(
@@ -42,6 +47,7 @@ public final class Execution implements TaskInstanceId, Resolvable {
       Instant lastFailure,
       int consecutiveFailures,
       Instant lastHeartbeat,
+      @Nullable Boolean rerun,
       long version) {
     this.executionTime = executionTime;
     this.taskInstance = taskInstance;
@@ -51,6 +57,7 @@ public final class Execution implements TaskInstanceId, Resolvable {
     this.lastSuccess = lastSuccess;
     this.consecutiveFailures = consecutiveFailures;
     this.lastHeartbeat = lastHeartbeat;
+    this.rerun = rerun;
     this.version = version;
   }
 
@@ -73,6 +80,7 @@ public final class Execution implements TaskInstanceId, Resolvable {
         lastFailure,
         consecutiveFailures,
         newLastHeartbeat,
+        rerun == null ? null : false,
         version + 1 // since this was incremented in the database when picked
         );
   }

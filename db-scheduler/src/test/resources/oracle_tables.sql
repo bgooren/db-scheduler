@@ -15,6 +15,7 @@ create table scheduled_tasks
     last_heartbeat       TIMESTAMP(6) WITH TIME ZONE,
     version              NUMBER(19, 0),
     priority             SMALLINT,
+    rerun                NUMBER(1, 0),
     PRIMARY KEY (task_name, task_instance)
 );
 

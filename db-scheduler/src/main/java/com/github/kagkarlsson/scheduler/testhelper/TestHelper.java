@@ -30,6 +30,7 @@ import com.github.kagkarlsson.scheduler.stats.StatsRegistry;
 import com.github.kagkarlsson.scheduler.stats.StatsRegistryAdapter;
 import com.github.kagkarlsson.scheduler.task.OnStartup;
 import com.github.kagkarlsson.scheduler.task.Task;
+import com.github.kagkarlsson.scheduler.task.helper.CoalescingTask;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -92,7 +93,17 @@ public class TestHelper {
       return this;
     }
 
+    @Override
+    public ManualSchedulerBuilder enableCoalescing() {
+      super.enableCoalescing();
+      return this;
+    }
+
     public ManualScheduler build() {
+      if (!enableCoalescing
+          && knownTasks.stream().anyMatch(task -> task instanceof CoalescingTask<?>)) {
+        throw new IllegalStateException("CoalescingTask requires enableCoalescing()");
+      }
       final TaskResolver taskResolver =
           new TaskResolver(new SchedulerListeners(schedulerListeners), clock, knownTasks);
       final JdbcCustomization jdbcCustomization =
@@ -109,6 +120,7 @@ public class TestHelper {
               new SchedulerName.Fixed("manual"),
               serializer,
               enablePriority,
+              enableCoalescing,
               clock);
       final JdbcTaskRepository clientTaskRepository =
           new JdbcTaskRepository(
@@ -120,6 +132,7 @@ public class TestHelper {
               new SchedulerName.Fixed("manual"),
               serializer,
               enablePriority,
+              enableCoalescing,
               clock);
 
       Waiter waiter = buildWaiter();

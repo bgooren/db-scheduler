@@ -33,6 +33,18 @@ public interface TaskRepository {
 
   boolean createIfNotExists(ScheduledTaskInstance execution);
 
+  /** Request coalesced work, retaining existing data and execution ownership. */
+  default void requestWork(ScheduledTaskInstance instance) {
+    throw new UnsupportedOperationException("Coalescing is not supported by this repository");
+  }
+
+  /**
+   * @return true if a follow-up execution was scheduled, false if the execution was removed.
+   */
+  default boolean completeCoalescing(Execution execution, Instant timeDone) {
+    throw new UnsupportedOperationException("Coalescing is not supported by this repository");
+  }
+
   List<Execution> getDue(Instant now, int limit);
 
   void createBatch(List<ScheduledTaskInstance> executions);

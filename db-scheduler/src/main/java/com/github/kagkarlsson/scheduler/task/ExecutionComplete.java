@@ -59,6 +59,7 @@ public class ExecutionComplete {
             null,
             0,
             null,
+            null,
             1);
     return new ExecutionComplete(
         nonExistingExecution, timeDone.minus(Duration.ofSeconds(1)), timeDone, Result.OK, null);

@@ -31,6 +31,37 @@ public class PostgreSqlJdbcCustomization extends DefaultJdbcCustomization {
   }
 
   @Override
+  public void requestWork(JdbcWorkParams request) {
+    var task = request.instance().getTaskInstance();
+    var jdbcRunner = request.jdbcRunner();
+    var query =
+        "insert into "
+            + request.tableName()
+            + " (task_name, task_instance, task_data, execution_time, picked, rerun, version"
+            + (request.orderByPriority() ? ", priority" : "")
+            + ") values (?, ?, ?, ?, ?, ?, ?"
+            + (request.orderByPriority() ? ", ?" : "")
+            + ")"
+            + " on conflict (task_name, task_instance) do update set rerun = ?";
+    jdbcRunner.execute(
+        query,
+        ps -> {
+          int index = 1;
+          ps.setString(index++, task.getTaskName()); // insert: task_name
+          ps.setString(index++, task.getId()); // insert: task_instance
+          setTaskData(ps, index++, request.taskData());
+          setInstant(ps, index++, request.instance().getExecutionTime());
+          ps.setBoolean(index++, false); // insert: picked
+          ps.setBoolean(index++, false); // insert: rerun
+          ps.setLong(index++, 1L); // insert: version
+          if (request.orderByPriority()) {
+            ps.setInt(index++, task.getPriority());
+          }
+          ps.setBoolean(index, true); // conflict: rerun
+        });
+  }
+
+  @Override
   public String getName() {
     return "PostgreSQL";
   }
@@ -72,7 +103,9 @@ public class PostgreSqlJdbcCustomization extends DefaultJdbcCustomization {
     String selectForUpdateQuery =
         " WITH locked_executions as (UPDATE "
             + ctx.tableName
-            + " st1 SET picked = ?, picked_by = ?, last_heartbeat = ?, version = version + 1 "
+            + " st1 SET "
+            + (ctx.coalescing ? "rerun = ?, " : "")
+            + "picked = ?, picked_by = ?, last_heartbeat = ?, version = version + 1 "
             + " WHERE (st1.task_name, st1.task_instance) IN "
             + "(SELECT st2.task_name, st2.task_instance FROM "
             + ctx.tableName
@@ -92,6 +125,9 @@ public class PostgreSqlJdbcCustomization extends DefaultJdbcCustomization {
         ps -> {
           int index = 1;
           // Update
+          if (ctx.coalescing) {
+            ps.setBoolean(index++, false);
+          }
           ps.setBoolean(index++, true); // picked (new)
           ps.setString(index++, truncate(ctx.schedulerName.getName(), 50)); // picked_by
           setInstant(ps, index++, now); // last_heartbeat

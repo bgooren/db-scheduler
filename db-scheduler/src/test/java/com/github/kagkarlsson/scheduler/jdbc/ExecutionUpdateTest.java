@@ -58,6 +58,7 @@ class ExecutionUpdateTest {
                 new SchedulerListeners(), new SystemClock(), List.of(ONETIME_TASK, STRING_TASK)),
             new Fixed("test"),
             false,
+            false,
             new SystemClock());
   }
 

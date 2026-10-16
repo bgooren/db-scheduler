@@ -27,17 +27,20 @@ public class JdbcTaskRepositoryContext {
   public final SchedulerName schedulerName;
   public final JdbcRunner jdbcRunner;
   public final Supplier<ResultSetMapper<List<Execution>>> resultSetMapper;
+  public final boolean coalescing;
 
   JdbcTaskRepositoryContext(
       TaskResolver taskResolver,
       String tableName,
       SchedulerName schedulerName,
       JdbcRunner jdbcRunner,
-      Supplier<ResultSetMapper<List<Execution>>> resultSetMapper) {
+      Supplier<ResultSetMapper<List<Execution>>> resultSetMapper,
+      boolean coalescing) {
     this.taskResolver = taskResolver;
     this.tableName = tableName;
     this.schedulerName = schedulerName;
     this.jdbcRunner = jdbcRunner;
     this.resultSetMapper = resultSetMapper;
+    this.coalescing = coalescing;
   }
 }

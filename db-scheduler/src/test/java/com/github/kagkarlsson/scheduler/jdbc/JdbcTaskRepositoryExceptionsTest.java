@@ -50,6 +50,7 @@ public class JdbcTaskRepositoryExceptionsTest {
             Serializer.DEFAULT_JAVA_SERIALIZER,
             mockJdbcRunner,
             false,
+            false,
             new SystemClock());
   }
 

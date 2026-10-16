@@ -139,6 +139,7 @@ public class MssqlCompatibilityTest extends CompatibilityTest {
                   new SchedulerName.Fixed("scheduler1"),
                   serializer,
                   false,
+                  false,
                   clock);
 
           // "odd" serializes to odd-length JSON

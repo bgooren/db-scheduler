@@ -2,6 +2,10 @@ package com.github.kagkarlsson.scheduler;
 
 import static com.github.kagkarlsson.jdbc.PreparedStatementSetter.NOOP;
 import static com.github.kagkarlsson.scheduler.jdbc.JdbcTaskRepository.DEFAULT_TABLE_NAME;
+import static org.mockito.AdditionalAnswers.delegatesTo;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.github.kagkarlsson.jdbc.JdbcRunner;
 import com.github.kagkarlsson.jdbc.Mappers;
@@ -9,10 +13,19 @@ import com.github.kagkarlsson.jdbc.PreparedStatementSetter;
 import com.google.common.io.CharStreams;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.util.function.Consumer;
 import javax.sql.DataSource;
 
 public class DbUtils {
+  public static DataSource dataSourceForConnection(Connection connection) throws SQLException {
+    var nonClosing = mock(Connection.class, delegatesTo(connection));
+    doNothing().when(nonClosing).close();
+    var dataSource = mock(DataSource.class);
+    when(dataSource.getConnection()).thenReturn(nonClosing);
+    return dataSource;
+  }
 
   public static void dropTables(DataSource dataSource) {
     new JdbcRunner(dataSource, true).execute("drop table if exists " + DEFAULT_TABLE_NAME, NOOP);

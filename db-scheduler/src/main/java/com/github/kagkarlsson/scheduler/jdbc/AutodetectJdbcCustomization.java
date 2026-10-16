@@ -78,6 +78,10 @@ public class AutodetectJdbcCustomization implements JdbcCustomization {
           detectedCustomization = new MySQLJdbcCustomization(persistTimestampInUTC);
         }
 
+      } else if (databaseProductName.contains("HSQL")) {
+        LOG.info("Using HSQLDB jdbc-overrides.");
+        detectedCustomization = new HsqlJdbcCustomization(persistTimestampInUTC);
+
       } else if (databaseProductName.contains(SQLITE)) {
         LOG.info("Using SQLite jdbc-overrides.");
         detectedCustomization = new SqliteJdbcCustomization();
@@ -152,6 +156,11 @@ public class AutodetectJdbcCustomization implements JdbcCustomization {
   public String createSelectDueQuery(
       String tableName, int limit, String andCondition, boolean orderByPriority) {
     return jdbcCustomization.createSelectDueQuery(tableName, limit, andCondition, orderByPriority);
+  }
+
+  @Override
+  public void requestWork(JdbcWorkParams request) {
+    jdbcCustomization.requestWork(request);
   }
 
   @Override

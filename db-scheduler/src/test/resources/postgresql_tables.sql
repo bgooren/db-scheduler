@@ -11,6 +11,7 @@ create table scheduled_tasks (
   last_heartbeat timestamp with time zone,
   version BIGINT not null,
   priority SMALLINT,
+  rerun BOOLEAN,
   PRIMARY KEY (task_name, task_instance)
 );
 

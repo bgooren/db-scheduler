@@ -12,6 +12,7 @@ create table test.scheduled_tasks (
   last_heartbeat datetime(6) null,
   version BIGINT not null,
   priority SMALLINT,
+  rerun BOOLEAN,
   PRIMARY KEY (task_name, task_instance),
   INDEX execution_time_idx (execution_time),
   INDEX last_heartbeat_idx (last_heartbeat),

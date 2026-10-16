@@ -29,6 +29,7 @@ import com.github.kagkarlsson.scheduler.stats.StatsRegistry;
 import com.github.kagkarlsson.scheduler.stats.StatsRegistryAdapter;
 import com.github.kagkarlsson.scheduler.task.OnStartup;
 import com.github.kagkarlsson.scheduler.task.Task;
+import com.github.kagkarlsson.scheduler.task.helper.CoalescingTask;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -76,6 +77,7 @@ public class SchedulerBuilder {
   protected LogLevel logLevel = DEFAULT_FAILURE_LOG_LEVEL;
   protected boolean logStackTrace = LOG_STACK_TRACE_ON_FAILURE;
   protected boolean enablePriority = false;
+  protected boolean enableCoalescing = false;
   protected boolean registerShutdownHook = false;
   protected int numberOfMissedHeartbeatsBeforeDead = DEFAULT_MISSED_HEARTBEATS_LIMIT;
   protected boolean alwaysPersistTimestampInUTC = false;
@@ -246,12 +248,22 @@ public class SchedulerBuilder {
     return this;
   }
 
+  /** Enable the optional nullable rerun column for coalescing tasks. */
+  public SchedulerBuilder enableCoalescing() {
+    this.enableCoalescing = true;
+    return this;
+  }
+
   public SchedulerBuilder clock(Clock clock) {
     this.clock = clock;
     return this;
   }
 
   public Scheduler build() {
+    if (!enableCoalescing
+        && knownTasks.stream().anyMatch(task -> task instanceof CoalescingTask<?>)) {
+      throw new IllegalStateException("CoalescingTask requires enableCoalescing()");
+    }
     if (schedulerName == null) {
       schedulerName = new SchedulerName.Hostname();
     }
@@ -272,6 +284,7 @@ public class SchedulerBuilder {
             schedulerName,
             serializer,
             enablePriority,
+            enableCoalescing,
             clock);
     final JdbcTaskRepository clientTaskRepository =
         new JdbcTaskRepository(
@@ -283,6 +296,7 @@ public class SchedulerBuilder {
             schedulerName,
             serializer,
             enablePriority,
+            enableCoalescing,
             clock);
 
     ExecutorService candidateExecutorService = executorService;
@@ -313,12 +327,13 @@ public class SchedulerBuilder {
     Waiter waiter = buildWaiter();
 
     LOG.info(
-        "Creating scheduler with configuration: threads={}, pollInterval={}s, heartbeat={}s, enable-immediate-execution={}, enable-priority={}, table-name={}, name={}",
+        "Creating scheduler with configuration: threads={}, pollInterval={}s, heartbeat={}s, enable-immediate-execution={}, enable-priority={}, enable-coalescing={}, table-name={}, name={}",
         executorThreads,
         waiter.getWaitDuration().getSeconds(),
         heartbeatInterval.getSeconds(),
         enableImmediateExecution,
         enablePriority,
+        enableCoalescing,
         tableName,
         schedulerName.getName());
 

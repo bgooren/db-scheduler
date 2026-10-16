@@ -31,6 +31,15 @@ public class TransactionManager {
   }
 
   public <T> T inTransaction(DoInTransaction<T> doInTransaction) {
+    return executeInTransaction(doInTransaction, true);
+  }
+
+  public <T> T inTransactionIfNeeded(DoInTransaction<T> doInTransaction) {
+    return executeInTransaction(doInTransaction, dataSource.commitWhenAutocommitDisabled());
+  }
+
+  private <T> T executeInTransaction(
+      DoInTransaction<T> doInTransaction, boolean commitWhenAutocommitDisabled) {
     if (transactionContextProvider.getCurrent() != null) {
       throw new SQLRuntimeException(
           "Cannot start new transaction when there already"
@@ -41,8 +50,10 @@ public class TransactionManager {
 
     try (Connection connection = dataSource.getConnection()) {
       boolean restoreAutocommit = false;
+      boolean autoCommit = connection.getAutoCommit();
+      boolean manageTransaction = autoCommit || commitWhenAutocommitDisabled;
 
-      if (connection.getAutoCommit()) {
+      if (autoCommit) {
         connection.setAutoCommit(false);
         restoreAutocommit = true;
       }
@@ -53,10 +64,14 @@ public class TransactionManager {
           transactionContextProvider.setCurrent(new TransactionContext(connection));
           result = doInTransaction.doInTransaction(connection);
         } catch (RuntimeException applicationException) {
-          throw rollback(connection, applicationException);
+          throw manageTransaction
+              ? rollback(connection, applicationException)
+              : applicationException;
         }
 
-        commit(connection); // might throw
+        if (manageTransaction) {
+          commit(connection); // might throw
+        }
         return result;
       } finally {
         if (restoreAutocommit) {

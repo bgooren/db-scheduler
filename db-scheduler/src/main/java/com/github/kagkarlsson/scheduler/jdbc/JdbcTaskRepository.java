@@ -41,6 +41,7 @@ import com.github.kagkarlsson.scheduler.task.SchedulableInstance;
 import com.github.kagkarlsson.scheduler.task.ScheduledTaskInstance;
 import com.github.kagkarlsson.scheduler.task.Task;
 import com.github.kagkarlsson.scheduler.task.TaskInstance;
+import com.github.kagkarlsson.scheduler.task.helper.CoalescingTask;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -72,6 +73,7 @@ public class JdbcTaskRepository implements TaskRepository {
   private final JdbcCustomization jdbcCustomization;
   private final JdbcConfig jdbcConfig;
   private final boolean orderByPriority;
+  private final boolean coalescing;
   private final Clock clock;
 
   public JdbcTaskRepository(
@@ -81,6 +83,7 @@ public class JdbcTaskRepository implements TaskRepository {
       TaskResolver taskResolver,
       SchedulerName schedulerSchedulerName,
       boolean orderByPriority,
+      boolean coalescing,
       Clock clock) {
     this(
         dataSource,
@@ -91,6 +94,7 @@ public class JdbcTaskRepository implements TaskRepository {
         schedulerSchedulerName,
         Serializer.DEFAULT_JAVA_SERIALIZER,
         orderByPriority,
+        coalescing,
         clock);
   }
 
@@ -102,6 +106,7 @@ public class JdbcTaskRepository implements TaskRepository {
       TaskResolver taskResolver,
       SchedulerName schedulerSchedulerName,
       boolean orderByPriority,
+      boolean coalescing,
       Clock clock) {
     this(
         dataSource,
@@ -112,6 +117,7 @@ public class JdbcTaskRepository implements TaskRepository {
         schedulerSchedulerName,
         Serializer.DEFAULT_JAVA_SERIALIZER,
         orderByPriority,
+        coalescing,
         clock);
   }
 
@@ -124,6 +130,7 @@ public class JdbcTaskRepository implements TaskRepository {
       SchedulerName schedulerSchedulerName,
       Serializer serializer,
       boolean orderByPriority,
+      boolean coalescing,
       Clock clock) {
     this(
         jdbcCustomization,
@@ -133,6 +140,7 @@ public class JdbcTaskRepository implements TaskRepository {
         serializer,
         new JdbcRunner(dataSource, commitWhenAutocommitDisabled),
         orderByPriority,
+        coalescing,
         clock);
   }
 
@@ -144,6 +152,7 @@ public class JdbcTaskRepository implements TaskRepository {
       Serializer serializer,
       JdbcRunner jdbcRunner,
       boolean orderByPriority,
+      boolean coalescing,
       Clock clock) {
     this.tableName = tableName;
     this.taskResolver = taskResolver;
@@ -153,6 +162,7 @@ public class JdbcTaskRepository implements TaskRepository {
     this.jdbcCustomization = jdbcCustomization;
     this.jdbcConfig = new JdbcConfig(tableName, jdbcRunner, jdbcCustomization);
     this.orderByPriority = orderByPriority;
+    this.coalescing = coalescing;
     this.clock = clock;
     this.insertQuery = getInsertQuery(tableName);
   }
@@ -191,6 +201,83 @@ public class JdbcTaskRepository implements TaskRepository {
       }
       LOG.debug("Execution not created, another thread created it.");
       return false;
+    }
+  }
+
+  @Override
+  public void requestWork(ScheduledTaskInstance instance) {
+    requireCoalescing();
+    taskResolver //
+        .resolve(Resolvable.of(instance.getTaskName(), instance.getExecutionTime()), false) //
+        .ifPresent(
+            task -> {
+              if (!(task instanceof CoalescingTask<?>)) {
+                throw new IllegalArgumentException(
+                    "requestWork requires a CoalescingTask: " + instance.getTaskName());
+              }
+            });
+
+    jdbcRunner.inTransactionIfNeeded(
+        tx -> {
+          jdbcCustomization.requestWork(
+              new JdbcWorkParams(
+                  tx,
+                  tableName,
+                  instance,
+                  serializer.serialize(instance.getTaskInstance().getData()),
+                  orderByPriority));
+          return null;
+        });
+  }
+
+  @Override
+  public boolean completeCoalescing(Execution execution, Instant timeDone) {
+    requireCoalescing();
+    // The predicate is evaluated while deleting, not from a previously read flag. A request either
+    // prevents this delete or observes the absent row and creates a fresh execution.
+    int removed =
+        jdbcRunner.execute(
+            "delete from "
+                + tableName
+                + " where task_name = ? and task_instance = ? and version = ? and picked = ? and (rerun = ? or rerun is null)",
+            ps -> {
+              ps.setString(1, execution.getTaskName());
+              ps.setString(2, execution.getId());
+              ps.setLong(3, execution.version);
+              ps.setBoolean(4, true);
+              ps.setBoolean(5, false);
+            });
+    if (removed == 1) {
+      return false;
+    }
+    int updated =
+        jdbcRunner.execute(
+            "update "
+                + tableName
+                + " set picked = ?, picked_by = ?, last_heartbeat = ?, execution_time = ?, last_success = ?, consecutive_failures = 0, version = version + 1"
+                + " where task_name = ? and task_instance = ? and version = ? and picked = ? and rerun = ?",
+            ps -> {
+              ps.setBoolean(1, false);
+              ps.setString(2, null);
+              jdbcCustomization.setInstant(ps, 3, null);
+              jdbcCustomization.setInstant(ps, 4, timeDone);
+              jdbcCustomization.setInstant(ps, 5, timeDone);
+              ps.setString(6, execution.getTaskName());
+              ps.setString(7, execution.getId());
+              ps.setLong(8, execution.version);
+              ps.setBoolean(9, true);
+              ps.setBoolean(10, true);
+            });
+    if (updated != 1) {
+      throw new ExecutionException(
+          "Failed to complete coalescing execution; ownership lost.", execution);
+    }
+    return true;
+  }
+
+  private void requireCoalescing() {
+    if (!coalescing) {
+      throw new IllegalStateException("Coalescing support must be explicitly enabled");
     }
   }
 
@@ -266,6 +353,7 @@ public class JdbcTaskRepository implements TaskRepository {
                 + "consecutive_failures = ?, "
                 + "execution_time = ?, "
                 + "task_data = ?, "
+                + (coalescing ? "rerun = ?, " : "")
                 + "version = 1 "
                 + "where task_name = ? "
                 + "and task_instance = ? "
@@ -284,6 +372,9 @@ public class JdbcTaskRepository implements TaskRepository {
               // may cause datbase-specific problems, might have to use setNull instead
               jdbcCustomization.setTaskData(
                   ps, index++, serializer.serialize(newData)); // task_data
+              if (coalescing) {
+                ps.setBoolean(index++, false);
+              }
               ps.setString(index++, toBeReplaced.taskInstance.getTaskName()); // task_name
               ps.setString(index++, toBeReplaced.taskInstance.getId()); // task_instance
               ps.setLong(index, toBeReplaced.version); // version
@@ -414,16 +505,22 @@ public class JdbcTaskRepository implements TaskRepository {
               txRunner.executeBatch(
                   "update "
                       + tableName
-                      + " set picked = ?, picked_by = ?, last_heartbeat = ?, version = version + 1 "
+                      + " set "
+                      + (coalescing ? "rerun = ?, " : "")
+                      + "picked = ?, picked_by = ?, last_heartbeat = ?, version = version + 1 "
                       + " where task_name = ? "
                       + " and task_instance = ? ",
                   candidates,
                   (value, ps) -> {
-                    ps.setBoolean(1, true);
-                    ps.setString(2, pickedBy);
-                    jdbcCustomization.setInstant(ps, 3, lastHeartbeat);
-                    ps.setString(4, value.taskInstance.getTaskName());
-                    ps.setString(5, value.taskInstance.getId());
+                    int index = 1;
+                    if (coalescing) {
+                      ps.setBoolean(index++, false);
+                    }
+                    ps.setBoolean(index++, true);
+                    ps.setString(index++, pickedBy);
+                    jdbcCustomization.setInstant(ps, index++, lastHeartbeat);
+                    ps.setString(index++, value.taskInstance.getTaskName());
+                    ps.setString(index, value.taskInstance.getId());
                   });
           int totalUpdated = IntStream.of(updated).sum();
           // FIXLATER: should we update picked executions with the updates to these fields?
@@ -589,19 +686,25 @@ public class JdbcTaskRepository implements TaskRepository {
         jdbcRunner.execute(
             "update "
                 + tableName
-                + " set picked = ?, picked_by = ?, last_heartbeat = ?, version = version + 1 "
+                + " set "
+                + (coalescing ? "rerun = ?, " : "")
+                + "picked = ?, picked_by = ?, last_heartbeat = ?, version = version + 1 "
                 + "where picked = ? "
                 + "and task_name = ? "
                 + "and task_instance = ? "
                 + "and version = ?",
             ps -> {
-              ps.setBoolean(1, true);
-              ps.setString(2, truncate(schedulerSchedulerName.getName(), 50));
-              jdbcCustomization.setInstant(ps, 3, timePicked);
-              ps.setBoolean(4, false);
-              ps.setString(5, e.taskInstance.getTaskName());
-              ps.setString(6, e.taskInstance.getId());
-              ps.setLong(7, e.version);
+              int index = 1;
+              if (coalescing) {
+                ps.setBoolean(index++, false);
+              }
+              ps.setBoolean(index++, true);
+              ps.setString(index++, truncate(schedulerSchedulerName.getName(), 50));
+              jdbcCustomization.setInstant(ps, index++, timePicked);
+              ps.setBoolean(index++, false);
+              ps.setString(index++, e.taskInstance.getTaskName());
+              ps.setString(index++, e.taskInstance.getId());
+              ps.setLong(index, e.version);
             });
 
     if (updated == 0) {
@@ -809,7 +912,8 @@ public class JdbcTaskRepository implements TaskRepository {
         tableName,
         schedulerSchedulerName,
         jdbcRunner,
-        () -> new ExecutionResultSetMapper(true, true));
+        () -> new ExecutionResultSetMapper(true, true),
+        coalescing);
   }
 
   private QueryBuilder queryForFilter(ScheduledExecutionsFilter filter) {
@@ -928,6 +1032,8 @@ public class JdbcTaskRepository implements TaskRepository {
         long version = rs.getLong("version");
 
         int priority = orderByPriority ? rs.getInt("priority") : 0;
+        // JDBC getBoolean maps SQL NULL to false: both mean no additional work was requested.
+        Boolean rerun = coalescing ? rs.getBoolean("rerun") : null;
 
         Supplier dataSupplier =
             memoize(
@@ -949,6 +1055,7 @@ public class JdbcTaskRepository implements TaskRepository {
                 lastFailure,
                 consecutiveFailures,
                 lastHeartbeat,
+                rerun,
                 version));
       }
 

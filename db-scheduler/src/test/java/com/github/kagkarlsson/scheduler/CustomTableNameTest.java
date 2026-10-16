@@ -42,6 +42,7 @@ public class CustomTableNameTest {
             new TaskResolver(SchedulerListeners.NOOP, new SystemClock(), knownTasks),
             new SchedulerName.Fixed(SCHEDULER_NAME),
             false,
+            false,
             new SystemClock());
 
     DbUtils.runSqlResource("postgresql_custom_tablename.sql").accept(DB.getDataSource());

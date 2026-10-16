@@ -38,6 +38,12 @@ public class ExecutionOperations<T> {
     taskRepository.remove(execution);
   }
 
+  public void completeCoalescing(ExecutionComplete completed) {
+    if (taskRepository.completeCoalescing(execution, completed.getTimeDone())) {
+      hintExecutionScheduled(execution.taskInstance, completed.getTimeDone());
+    }
+  }
+
   public void removeAndScheduleNew(SchedulableInstance<?> schedulableInstance) {
     Instant executionTime = taskRepository.replace(execution, schedulableInstance);
     hintExecutionScheduled(schedulableInstance.getTaskInstance(), executionTime);

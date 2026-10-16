@@ -35,6 +35,42 @@ public class MssqlJdbcCustomization extends DefaultJdbcCustomization {
   }
 
   @Override
+  public void requestWork(JdbcWorkParams request) {
+    var task = request.instance().getTaskInstance();
+    var jdbcRunner = request.jdbcRunner();
+    // HOLDLOCK protects an absent key as well, avoiding concurrent MERGE inserts.
+    var query =
+        "merge into "
+            + request.tableName()
+            + " with (HOLDLOCK, UPDLOCK) target using (values (?, ?)) as source(task_name, task_instance)"
+            + " on (target.task_name = source.task_name and target.task_instance = source.task_instance)"
+            + " when matched then update set rerun = ?"
+            + " when not matched then insert (task_name, task_instance, task_data, execution_time, picked, rerun, version"
+            + (request.orderByPriority() ? ", priority" : "")
+            + ") values (?, ?, ?, ?, ?, ?, ?"
+            + (request.orderByPriority() ? ", ?" : "")
+            + ");";
+    jdbcRunner.execute(
+        query,
+        ps -> {
+          int index = 1;
+          ps.setString(index++, task.getTaskName()); // source.task_name
+          ps.setString(index++, task.getId()); // source.task_instance
+          ps.setBoolean(index++, true); // matched: rerun
+          ps.setString(index++, task.getTaskName()); // insert: task_name
+          ps.setString(index++, task.getId()); // insert: task_instance
+          setTaskData(ps, index++, request.taskData());
+          setInstant(ps, index++, request.instance().getExecutionTime());
+          ps.setBoolean(index++, false); // insert: picked
+          ps.setBoolean(index++, false); // insert: rerun
+          ps.setLong(index++, 1L); // insert: version
+          if (request.orderByPriority()) {
+            ps.setInt(index++, task.getPriority());
+          }
+        });
+  }
+
+  @Override
   public String getName() {
     return "MSSQL";
   }

@@ -22,6 +22,11 @@ import java.util.List;
 
 public interface JdbcCustomization {
 
+  /** Atomically create or request coalesced work, retaining task data and execution ownership. */
+  default void requestWork(JdbcWorkParams request) {
+    throw new UnsupportedOperationException("Coalescing is not supported by " + getName());
+  }
+
   String getName();
 
   void setInstant(PreparedStatement p, int index, Instant value) throws SQLException;

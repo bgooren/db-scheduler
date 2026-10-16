@@ -12,6 +12,7 @@ create table scheduled_tasks
   last_heartbeat       datetimeoffset,
   [version]            bigint         not null,
   priority             smallint,
+  rerun                bit,
   primary key (task_instance, task_name),
   index execution_time_idx (execution_time),
   index last_heartbeat_idx (last_heartbeat),

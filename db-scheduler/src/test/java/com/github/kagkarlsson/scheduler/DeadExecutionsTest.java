@@ -59,6 +59,7 @@ public class DeadExecutionsTest {
             taskResolver,
             new SchedulerName.Fixed("scheduler1"),
             false,
+            false,
             settableClock);
 
     scheduler =

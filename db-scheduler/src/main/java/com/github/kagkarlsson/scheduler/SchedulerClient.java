@@ -31,6 +31,7 @@ import com.github.kagkarlsson.scheduler.task.ScheduledTaskInstance;
 import com.github.kagkarlsson.scheduler.task.Task;
 import com.github.kagkarlsson.scheduler.task.TaskInstance;
 import com.github.kagkarlsson.scheduler.task.TaskInstanceId;
+import com.github.kagkarlsson.scheduler.task.helper.CoalescingTask;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -316,6 +317,15 @@ public interface SchedulerClient {
    */
   List<TaskSummary> getScheduledExecutionsSummaryByTask();
 
+  /**
+   * Request work for a CoalescingTask. An absent instance is scheduled immediately; a waiting
+   * instance is retained, and an active instance gets one follow-up execution. Existing data and
+   * priority are retained. Requires enableCoalescing() on the scheduler/client builder.
+   */
+  default <T> void requestWork(TaskInstance<T> taskInstance) {
+    throw new UnsupportedOperationException("Coalescing is not supported by this client");
+  }
+
   class ScheduleOptions {
 
     public static final ScheduleOptions WHEN_EXISTS_DO_NOTHING =
@@ -358,6 +368,7 @@ public interface SchedulerClient {
     private String tableName = JdbcTaskRepository.DEFAULT_TABLE_NAME;
     private JdbcCustomization jdbcCustomization;
     private boolean priority = false;
+    private boolean coalescing = false;
 
     private Builder(DataSource dataSource, List<Task<?>> knownTasks) {
       this.dataSource = dataSource;
@@ -388,12 +399,21 @@ public interface SchedulerClient {
       return this;
     }
 
+    /** Enable the optional nullable rerun column for coalescing tasks. */
+    public Builder enableCoalescing() {
+      this.coalescing = true;
+      return this;
+    }
+
     public Builder jdbcCustomization(JdbcCustomization jdbcCustomization) {
       this.jdbcCustomization = jdbcCustomization;
       return this;
     }
 
     public SchedulerClient build() {
+      if (!coalescing && knownTasks.stream().anyMatch(task -> task instanceof CoalescingTask<?>)) {
+        throw new IllegalStateException("CoalescingTask requires enableCoalescing()");
+      }
       final SystemClock clock = new SystemClock();
       TaskResolver taskResolver = new TaskResolver(SchedulerListeners.NOOP, clock, knownTasks);
 
@@ -411,6 +431,7 @@ public interface SchedulerClient {
               new SchedulerClientName(),
               serializer,
               priority,
+              coalescing,
               clock);
 
       return new StandardSchedulerClient(taskRepository, clock);
@@ -456,6 +477,13 @@ public interface SchedulerClient {
       return scheduleIfNotExists(
           schedulableInstance.getTaskInstance(),
           schedulableInstance.getNextExecutionTime(clock.now()));
+    }
+
+    @Override
+    public <T> void requestWork(TaskInstance<T> taskInstance) {
+      Instant now = clock.now();
+      taskRepository.requestWork(new ScheduledTaskInstance(taskInstance, now));
+      schedulerListeners.onExecutionScheduled(taskInstance, now);
     }
 
     @Override

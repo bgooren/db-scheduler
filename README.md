@@ -276,6 +276,55 @@ to add an index on `(execution_time asc, priority desc)` (replacing the old `exe
 as they do not support descending indexes.
 * Value `null` for priority may be interpreted differently depending on database (low or high).
 
+:gear: `.enableCoalescing()`<br/>
+Opt-in support for coalescing one-time tasks, enabled separately on each scheduler and standalone
+client. Without this setting, SQL does not reference the optional `rerun` column.
+
+```java
+CoalescingTask<Void> sync = Tasks.coalescing("sync") //
+    .execute((instance, context) -> synchronizeAccount(instance.getId()));
+Scheduler scheduler = Scheduler.create(dataSource, sync) //
+    .enableCoalescing() //
+    .build();
+scheduler.requestWork(sync.instance("account-123"));
+```
+
+`requestWork` schedules an absent instance immediately. Requests before claiming share that execution;
+requests after claiming cause one follow-up execution. Multiple requests during the same execution
+are coalesced. Existing task data and priority are retained. `scheduleIfNotExists` keeps its existing
+semantics: it does not request a follow-up. Both polling strategies support coalescing.
+
+Pending work survives restarts. Retries and dead-execution recovery retain the row; each new claim
+consumes all earlier requests. Explicit cancellation or a terminal failure-handler that removes the
+execution discards pending work. A later request can create the instance again. Register the same
+`CoalescingTask` definition and enable support on every scheduler that may execute these tasks;
+old scheduler versions must not execute them. Standalone clients may use a `TaskDescriptor` without
+registering the task implementation, including when using `scheduleIfNotExists`.
+`requestWork` requires a task name backed by a `CoalescingTask`; a client without task definitions
+relies on the caller to use the correct task name.
+
+Requests use a database-specific upsert and participate in an existing application transaction when
+using a transaction-aware DataSource. Otherwise the operation manages its own transaction. Existing
+transactions are not committed or rolled back by `requestWork`. As with other database operations,
+deadlocks and serialization failures are propagated to the caller; retry the application transaction.
+Oracle also reports a transient failure if a concurrent insert wins and completes before its one
+fallback update can request a follow-up. The request never silently succeeds without retaining work.
+
+**Schema migration (only when opting in):** add a nullable `rerun` column, with no default or backfill.
+`rerun` records only additional work: `NULL` and `false` both mean no pending request, and `true`
+means additional work was requested. It does not identify the task type; the registered task
+implementation determines completion behavior. Normal scheduling may leave the flag `NULL`.
+`requestWork` sets it to `true` on an existing row, and claiming atomically resets it to `false`.
+
+```sql
+-- PostgreSQL, MySQL, MariaDB
+ALTER TABLE scheduled_tasks ADD rerun BOOLEAN NULL;
+-- SQL Server, HSQLDB, SQLite (run the appropriate statement for your database)
+ALTER TABLE scheduled_tasks ADD rerun BIT NULL;
+-- Oracle
+ALTER TABLE scheduled_tasks ADD rerun NUMBER(1, 0) NULL;
+```
+
 #### Polling strategy
 
 If you are running >1000 executions/s you might want to use the `lock-and-fetch` polling-strategy for lower overhead

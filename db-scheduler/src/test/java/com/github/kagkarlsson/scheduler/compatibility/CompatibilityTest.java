@@ -6,6 +6,7 @@ import static com.github.kagkarlsson.scheduler.helper.TimeHelper.truncatedInstan
 import static com.github.kagkarlsson.scheduler.jdbc.JdbcTaskRepository.DEFAULT_TABLE_NAME;
 import static java.util.Collections.singletonList;
 import static java.util.stream.Collectors.toList;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.greaterThan;
@@ -36,9 +37,11 @@ import com.github.kagkarlsson.scheduler.helper.TimeHelper;
 import com.github.kagkarlsson.scheduler.jdbc.AutodetectJdbcCustomization;
 import com.github.kagkarlsson.scheduler.jdbc.JdbcCustomization;
 import com.github.kagkarlsson.scheduler.jdbc.JdbcTaskRepository;
+import com.github.kagkarlsson.scheduler.serializer.Serializer;
 import com.github.kagkarlsson.scheduler.task.Execution;
 import com.github.kagkarlsson.scheduler.task.SchedulableInstance;
 import com.github.kagkarlsson.scheduler.task.SchedulableTaskInstance;
+import com.github.kagkarlsson.scheduler.task.ScheduledTaskInstance;
 import com.github.kagkarlsson.scheduler.task.TaskDescriptor;
 import com.github.kagkarlsson.scheduler.task.TaskInstance;
 import com.github.kagkarlsson.scheduler.task.helper.OneTimeTask;
@@ -392,6 +395,7 @@ public abstract class CompatibilityTest {
             taskResolver,
             new SchedulerName.Fixed("scheduler1"),
             orderByPriority,
+            false,
             clock);
     return jdbcTaskRepository;
   }
@@ -461,6 +465,7 @@ public abstract class CompatibilityTest {
             DEFAULT_TABLE_NAME,
             taskResolver,
             new SchedulerName.Fixed("scheduler1"),
+            false,
             false,
             new SystemClock());
 
@@ -551,6 +556,7 @@ public abstract class CompatibilityTest {
             taskResolver,
             new SchedulerName.Fixed("scheduler1"),
             false,
+            false,
             clock);
 
     final JdbcTaskRepository jdbcTaskRepositoryWithPriority =
@@ -562,6 +568,7 @@ public abstract class CompatibilityTest {
             taskResolver,
             new SchedulerName.Fixed("scheduler1"),
             true,
+            false,
             clock);
 
     final Instant now = truncatedInstantNow();
@@ -618,6 +625,7 @@ public abstract class CompatibilityTest {
             taskResolver,
             new SchedulerName.Fixed("scheduler1"),
             false,
+            false,
             clock);
 
     final Instant now = truncatedInstantNow();
@@ -658,6 +666,213 @@ public abstract class CompatibilityTest {
     assertThat(delayingHandlerOneTime.timesExecuted.get(), is(1));
   }
 
+  @Test
+  void coalescing_requests_complete_and_upgrade_null_flags() {
+    var task = Tasks.coalescing("coalescing", String.class).execute((i, c) -> {});
+    var clock = new SettableClock();
+    var repository =
+        new JdbcTaskRepository(
+            getDataSource(),
+            commitWhenAutocommitDisabled(),
+            resolveJdbcCustomization(),
+            DEFAULT_TABLE_NAME,
+            new TaskResolver(SchedulerListeners.NOOP, clock, List.of(task, oneTime)),
+            new SchedulerName.Fixed("coalescing"),
+            Serializer.DEFAULT_JAVA_SERIALIZER,
+            false,
+            true,
+            clock);
+    var instance = task.instance("account", "original");
+    for (boolean lockAndFetch : supportsSelectForUpdate ? List.of(false, true) : List.of(false)) {
+      repository.requestWork(new ScheduledTaskInstance(instance, anInstant));
+      repository.requestWork(
+          new ScheduledTaskInstance(task.instance("account", "ignored"), anInstant));
+      var picked =
+          lockAndFetch
+              ? repository.lockAndGetDue(Instant.now(), 1).get(0)
+              : repository
+                  .pick(repository.getDue(Instant.now(), 1).get(0), Instant.now())
+                  .orElseThrow();
+      assertThat(picked.rerun).isFalse();
+      assertThat(picked.taskInstance.getData()).isEqualTo("original");
+      repository.requestWork(new ScheduledTaskInstance(instance, anInstant));
+      assertThat(repository.completeCoalescing(picked, anInstant)).isTrue();
+      var followUp =
+          lockAndFetch
+              ? repository.lockAndGetDue(Instant.now(), 1).get(0)
+              : repository
+                  .pick(repository.getDue(Instant.now(), 1).get(0), Instant.now())
+                  .orElseThrow();
+      assertThat(followUp.rerun).isFalse();
+      assertThat(repository.completeCoalescing(followUp, anInstant)).isFalse();
+      assertThat(repository.getExecution(instance)).isEmpty();
+    }
+    var standalone =
+        new JdbcTaskRepository(
+            getDataSource(),
+            commitWhenAutocommitDisabled(),
+            resolveJdbcCustomization(),
+            DEFAULT_TABLE_NAME,
+            new TaskResolver(SchedulerListeners.NOOP, clock, List.of()),
+            new SchedulerName.Fixed("standalone"),
+            Serializer.DEFAULT_JAVA_SERIALIZER,
+            false,
+            true,
+            clock);
+    for (boolean requestBeforeClaim : List.of(false, true)) {
+      standalone.createIfNotExists(new ScheduledTaskInstance(instance, anInstant));
+      if (requestBeforeClaim) {
+        standalone.requestWork(
+            new ScheduledTaskInstance(task.instance("account", "ignored"), anInstant));
+        assertThat(repository.getExecution(instance).orElseThrow().rerun).isTrue();
+      }
+      var picked =
+          repository
+              .pick(repository.getExecution(instance).orElseThrow(), Instant.now())
+              .orElseThrow();
+      assertThat(picked.rerun).isFalse();
+      assertThat(picked.taskInstance.getData()).isEqualTo("original");
+      assertThat(repository.completeCoalescing(picked, anInstant)).isFalse();
+      assertThat(repository.getExecution(instance)).isEmpty();
+    }
+  }
+
+  @Test
+  void coalescing_request_uses_current_state_in_repeatable_read() throws Exception {
+    try (var connection = getDataSource().getConnection()) {
+      var database = connection.getMetaData().getDatabaseProductName();
+      org.junit.jupiter.api.Assumptions.assumeTrue(
+          database.contains("MySQL") || database.contains("MariaDB"));
+      var task = Tasks.coalescing("transactional").execute((i, c) -> {});
+      var instance = task.instance("account");
+      var clock = new SettableClock();
+      var resolver = new TaskResolver(SchedulerListeners.NOOP, clock, List.of(task));
+      var peer =
+          new JdbcTaskRepository(
+              getDataSource(),
+              commitWhenAutocommitDisabled(),
+              resolveJdbcCustomization(),
+              DEFAULT_TABLE_NAME,
+              resolver,
+              new SchedulerName.Fixed("peer"),
+              Serializer.DEFAULT_JAVA_SERIALIZER,
+              false,
+              true,
+              clock);
+      peer.requestWork(new ScheduledTaskInstance(instance, anInstant));
+      connection.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+      connection.setAutoCommit(false);
+      try {
+        var clientRepository =
+            new JdbcTaskRepository(
+                DbUtils.dataSourceForConnection(connection),
+                false,
+                resolveJdbcCustomization(),
+                DEFAULT_TABLE_NAME,
+                resolver,
+                new SchedulerName.Fixed("client"),
+                Serializer.DEFAULT_JAVA_SERIALIZER,
+                false,
+                true,
+                clock);
+        // Establish an older snapshot which still sees a waiting execution.
+        assertThat(clientRepository.getExecution(instance).orElseThrow().picked).isFalse();
+        var picked =
+            peer.pick(peer.getExecution(instance).orElseThrow(), Instant.now()).orElseThrow();
+        peer.completeCoalescing(picked, anInstant);
+        clientRepository.requestWork(new ScheduledTaskInstance(instance, anInstant));
+        connection.commit();
+        assertThat(peer.getExecution(instance)).isPresent();
+      } finally {
+        connection.rollback();
+      }
+    }
+  }
+
+  @Test
+  void coalescing_requests_join_application_transaction() throws Exception {
+    var task = Tasks.coalescing("transaction-scope", String.class).execute((i, c) -> {});
+    var instance = task.instance("account", "original");
+    var clock = new SettableClock();
+    var resolver = new TaskResolver(SchedulerListeners.NOOP, clock, List.of(task));
+    var customization = resolveJdbcCustomization();
+    var peer =
+        new JdbcTaskRepository(
+            getDataSource(),
+            commitWhenAutocommitDisabled(),
+            customization,
+            DEFAULT_TABLE_NAME,
+            resolver,
+            new SchedulerName.Fixed("peer"),
+            Serializer.DEFAULT_JAVA_SERIALIZER,
+            false,
+            true,
+            clock);
+    for (boolean commit : List.of(false, true)) {
+      try (var connection = getDataSource().getConnection()) {
+        connection.setAutoCommit(false);
+        try {
+          var client =
+              new JdbcTaskRepository(
+                  DbUtils.dataSourceForConnection(connection),
+                  false,
+                  customization,
+                  DEFAULT_TABLE_NAME,
+                  resolver,
+                  new SchedulerName.Fixed("client"),
+                  Serializer.DEFAULT_JAVA_SERIALIZER,
+                  false,
+                  true,
+                  clock);
+          client.requestWork(new ScheduledTaskInstance(instance, anInstant));
+          assertThat(client.getExecution(instance)).isPresent();
+          if (commit) {
+            connection.commit();
+          } else {
+            connection.rollback();
+          }
+        } finally {
+          connection.rollback();
+        }
+      }
+      assertThat(peer.getExecution(instance).isPresent()).isEqualTo(commit);
+    }
+    var picked = peer.pick(peer.getExecution(instance).orElseThrow(), Instant.now()).orElseThrow();
+    for (boolean commit : List.of(false, true)) {
+      try (var connection = getDataSource().getConnection()) {
+        connection.setAutoCommit(false);
+        try {
+          var client =
+              new JdbcTaskRepository(
+                  DbUtils.dataSourceForConnection(connection),
+                  false,
+                  customization,
+                  DEFAULT_TABLE_NAME,
+                  resolver,
+                  new SchedulerName.Fixed("client"),
+                  Serializer.DEFAULT_JAVA_SERIALIZER,
+                  false,
+                  true,
+                  clock);
+          client.requestWork(
+              new ScheduledTaskInstance(task.instance("account", "ignored"), anInstant));
+          if (commit) {
+            connection.commit();
+          } else {
+            connection.rollback();
+          }
+        } finally {
+          connection.rollback();
+        }
+      }
+      var pending = peer.getExecution(instance).orElseThrow();
+      assertThat(pending.rerun).isEqualTo(commit);
+      assertThat(pending.version).isEqualTo(picked.version);
+      assertThat(pending.taskInstance.getData()).isEqualTo("original");
+    }
+    assertThat(peer.completeCoalescing(picked, anInstant)).isTrue();
+  }
+
   private JdbcTaskRepository createRepositoryForForZone(
       TaskResolver defaultTaskResolver, String zoneId) {
 
@@ -677,6 +892,7 @@ public abstract class CompatibilityTest {
         DEFAULT_TABLE_NAME,
         defaultTaskResolver,
         new SchedulerName.Fixed("scheduler1"),
+        false,
         false,
         new SystemClock());
   }

@@ -111,4 +111,62 @@ public class TransactionManagerTest {
 
     assertThat(txp.getCurrent(), nullValue());
   }
+
+  @Test
+  void joined_transaction_is_not_committed() throws SQLException {
+    tm.inTransactionIfNeeded((DoInTransaction<Void>) c -> null);
+    verify(connection, never()).commit();
+    verify(connection, never()).rollback();
+    verify(connection).close();
+    assertThat(txp.getCurrent(), nullValue());
+  }
+
+  @Test
+  void joined_transaction_is_not_rolled_back_on_failure() throws SQLException {
+    org.junit.jupiter.api.Assertions.assertThrows(
+        SQLRuntimeException.class,
+        () ->
+            tm.inTransactionIfNeeded(
+                c -> {
+                  throw new SQLRuntimeException("caller decides");
+                }));
+    verify(connection, never()).commit();
+    verify(connection, never()).rollback();
+    verify(connection).close();
+    assertThat(txp.getCurrent(), nullValue());
+  }
+
+  @Test
+  void new_transaction_is_committed_and_autocommit_restored() throws SQLException {
+    when(connection.getAutoCommit()).thenReturn(true);
+    tm.inTransactionIfNeeded((DoInTransaction<Void>) c -> null);
+    verify(connection).setAutoCommit(false);
+    verify(connection).commit();
+    verify(connection).setAutoCommit(true);
+    verify(connection, never()).rollback();
+  }
+
+  @Test
+  void new_transaction_is_rolled_back_on_failure() throws SQLException {
+    when(connection.getAutoCommit()).thenReturn(true);
+    org.junit.jupiter.api.Assertions.assertThrows(
+        SQLRuntimeException.class,
+        () ->
+            tm.inTransactionIfNeeded(
+                c -> {
+                  throw new SQLRuntimeException("rollback");
+                }));
+    verify(connection).rollback();
+    verify(connection).setAutoCommit(true);
+    verify(connection, never()).commit();
+  }
+
+  @Test
+  void explicitly_owned_transaction_is_committed_when_autocommit_is_disabled() throws SQLException {
+    var manager = new TransactionManager(new DataSourceConnectionSupplier(dataSource, true), txp);
+    manager.inTransactionIfNeeded((DoInTransaction<Void>) c -> null);
+    verify(connection).commit();
+    verify(connection, never()).rollback();
+    verify(connection, never()).setAutoCommit(true);
+  }
 }

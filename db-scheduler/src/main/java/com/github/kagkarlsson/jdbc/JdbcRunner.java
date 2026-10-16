@@ -72,6 +72,23 @@ public class JdbcRunner {
             });
   }
 
+  /**
+   * Execute on one connection, joining an existing transaction when autocommit is disabled and
+   * commitWhenAutocommitDisabled is false. Only transactions owned by this runner are committed or
+   * rolled back. Nested calls using the supplied runner share that same transaction.
+   */
+  public <T> T inTransactionIfNeeded(Function<JdbcRunner, T> doInTransaction) {
+    if (connectionSupplier.isExternallyManagedConnection()) {
+      return doInTransaction.apply(this);
+    }
+    return new TransactionManager(connectionSupplier, transactionContextProvider)
+        .inTransactionIfNeeded(
+            c ->
+                doInTransaction.apply(
+                    new JdbcRunner(
+                        new ExternallyManagedConnection(c), transactionContextProvider)));
+  }
+
   public int execute(String query, PreparedStatementSetter setParameters) {
     return execute(
         query,

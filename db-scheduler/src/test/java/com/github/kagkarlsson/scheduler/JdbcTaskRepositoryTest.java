@@ -733,6 +733,7 @@ public class JdbcTaskRepositoryTest {
         taskResolver,
         new SchedulerName.Fixed(SCHEDULER_NAME),
         orderByPriority,
+        false,
         new SystemClock());
   }
 
